@@ -11,15 +11,17 @@ import {
   View
 } from 'react-native';
 import { FilePicker } from './src/components/FilePicker';
+import { defaultEmailConfig } from './src/config/defaultEmailConfig';
 import { defaultSettings } from './src/config/defaultSettings';
 import { buildInvoiceMessage, buildQuoteMessage } from './src/logic/messages';
 import { calculateQuote } from './src/logic/pricing';
 import { usePersistentState } from './src/state/usePersistentState';
-import { buildEmailDraft } from './src/services/email';
+import { buildEmailDraft, createEmailProvider } from './src/services/email';
 import { createDocument, downloadHtmlDocument, openPrintPreview } from './src/services/pdf';
 import {
   CommunicationRecord,
   DocumentKind,
+  EmailConfig,
   FinanceRecord,
   GeneratedDocument,
   JobCard,
@@ -50,13 +52,11 @@ const asNumber = (value: string, fallback = 0) => {
 export default function App() {
   const [request, setRequest] = useState<PrintRequest>(emptyRequest);
   const [settings, setSettings] = usePersistentState<PricingSettings>('aq_settings', defaultSettings);
+  const [emailConfig, setEmailConfig] = usePersistentState<EmailConfig>('aq_email_config', defaultEmailConfig);
   const [jobs, setJobs] = usePersistentState<JobCard[]>('aq_jobs', []);
   const [finance, setFinance] = usePersistentState<FinanceRecord[]>('aq_finance', []);
   const [documents, setDocuments] = usePersistentState<GeneratedDocument[]>('aq_docs', []);
-  const [communications, setCommunications] = usePersistentState<CommunicationRecord[]>(
-    'aq_comms',
-    []
-  );
+  const [communications, setCommunications] = usePersistentState<CommunicationRecord[]>('aq_comms', []);
 
   const preview = useMemo(() => calculateQuote(request, settings), [request, settings]);
 
@@ -96,7 +96,7 @@ export default function App() {
       return;
     }
 
-    const updatedFinance = [
+    setFinance([
       {
         jobId: target.id,
         title: target.request.projectTitle,
@@ -105,9 +105,8 @@ export default function App() {
         createdAt: new Date().toISOString()
       },
       ...finance
-    ];
+    ]);
 
-    setFinance(updatedFinance);
     setJobs(
       jobs.map((job) =>
         job.id === jobId
@@ -136,9 +135,17 @@ export default function App() {
     return html;
   };
 
-  const emailDocument = (job: JobCard, kind: DocumentKind) => {
-    const body = kind === 'quote' ? job.quoteMessage ?? buildQuoteMessage(job) : job.invoiceMessage ?? buildInvoiceMessage(job);
-    const { subject, mailto } = buildEmailDraft(job, kind, body);
+  const sendEmail = async (job: JobCard, kind: DocumentKind) => {
+    const body =
+      kind === 'quote' ? job.quoteMessage ?? buildQuoteMessage(job) : job.invoiceMessage ?? buildInvoiceMessage(job);
+    const { subject } = buildEmailDraft(job, kind, body);
+
+    const provider = createEmailProvider(emailConfig);
+    const result = await provider.send({
+      to: job.request.clientEmail,
+      subject,
+      body
+    });
 
     setCommunications([
       {
@@ -146,15 +153,18 @@ export default function App() {
         jobId: job.id,
         kind,
         channel: 'email',
+        provider: result.provider,
         recipient: job.request.clientEmail,
         subject,
+        status: result.status,
+        error: result.error,
         createdAt: new Date().toISOString()
       },
       ...communications
     ]);
 
-    if (typeof window !== 'undefined') {
-      window.location.href = mailto;
+    if (!result.ok && result.error) {
+      Alert.alert('Email send failed', result.error);
     }
   };
 
@@ -214,21 +224,19 @@ export default function App() {
               keyboardType="numeric"
             />
           </View>
-          <View style={styles.row}>
-            <Field
-              label="Design hours"
-              value={String(request.designHours)}
-              onChange={(value) => setRequest({ ...request, designHours: asNumber(value, 0) })}
-              keyboardType="numeric"
-            />
-            <Field
-              label="Shipping cost"
-              value={String(request.shippingCost)}
-              onChange={(value) => setRequest({ ...request, shippingCost: asNumber(value, 0) })}
-              keyboardType="numeric"
-            />
-          </View>
 
+          <Field
+            label="Design hours"
+            value={String(request.designHours)}
+            onChange={(value) => setRequest({ ...request, designHours: asNumber(value, 0) })}
+            keyboardType="numeric"
+          />
+          <Field
+            label="Shipping cost"
+            value={String(request.shippingCost)}
+            onChange={(value) => setRequest({ ...request, shippingCost: asNumber(value, 0) })}
+            keyboardType="numeric"
+          />
           <Field
             label="Post-processing fee"
             value={String(request.postProcessingFee)}
@@ -255,7 +263,6 @@ export default function App() {
 
           <View style={styles.summaryBox}>
             <Text style={styles.h3}>Live Quote Preview: ${preview.total.toFixed(2)}</Text>
-            <Text style={styles.meta}>Material ${preview.materialCost.toFixed(2)} • Design ${preview.designCost.toFixed(2)} • Shipping ${preview.shippingCost.toFixed(2)}</Text>
           </View>
 
           <Pressable style={styles.button} onPress={addJobCard}>
@@ -265,51 +272,35 @@ export default function App() {
 
         <View style={styles.card}>
           <Text style={styles.h2}>Pricing Settings</Text>
-          <SettingField
-            label="Machine hourly rate"
-            value={settings.machineHourlyRate}
-            onChange={(value) => setSettings({ ...settings, machineHourlyRate: value })}
-          />
-          <SettingField
-            label="Default print hours"
-            value={settings.estimatedPrintHours}
-            onChange={(value) => setSettings({ ...settings, estimatedPrintHours: value })}
-          />
-          <SettingField
-            label="Base labor fee"
-            value={settings.baseLaborFee}
-            onChange={(value) => setSettings({ ...settings, baseLaborFee: value })}
-          />
-          <SettingField
-            label="Multi-color fee / extra color"
-            value={settings.multicolorFeePerExtraColor}
-            onChange={(value) => setSettings({ ...settings, multicolorFeePerExtraColor: value })}
-          />
-          <SettingField
-            label="Design hourly rate"
-            value={settings.designHourlyRate}
-            onChange={(value) => setSettings({ ...settings, designHourlyRate: value })}
-          />
-          <SettingField
-            label="Margin %"
-            value={settings.serviceMarginPercent}
-            onChange={(value) => setSettings({ ...settings, serviceMarginPercent: value })}
-          />
-          <SettingField
-            label="Shipping markup %"
-            value={settings.defaultShippingMarkupPercent}
-            onChange={(value) => setSettings({ ...settings, defaultShippingMarkupPercent: value })}
-          />
-          <SettingField
-            label="Tax %"
-            value={settings.taxPercent}
-            onChange={(value) => setSettings({ ...settings, taxPercent: value })}
-          />
-          <SettingField
-            label="Minimum order"
-            value={settings.minimumOrderAmount}
-            onChange={(value) => setSettings({ ...settings, minimumOrderAmount: value })}
-          />
+          <SettingField label="Machine hourly rate" value={settings.machineHourlyRate} onChange={(value) => setSettings({ ...settings, machineHourlyRate: value })} />
+          <SettingField label="Default print hours" value={settings.estimatedPrintHours} onChange={(value) => setSettings({ ...settings, estimatedPrintHours: value })} />
+          <SettingField label="Base labor fee" value={settings.baseLaborFee} onChange={(value) => setSettings({ ...settings, baseLaborFee: value })} />
+          <SettingField label="Multi-color fee / extra color" value={settings.multicolorFeePerExtraColor} onChange={(value) => setSettings({ ...settings, multicolorFeePerExtraColor: value })} />
+          <SettingField label="Design hourly rate" value={settings.designHourlyRate} onChange={(value) => setSettings({ ...settings, designHourlyRate: value })} />
+          <SettingField label="Margin %" value={settings.serviceMarginPercent} onChange={(value) => setSettings({ ...settings, serviceMarginPercent: value })} />
+          <SettingField label="Shipping markup %" value={settings.defaultShippingMarkupPercent} onChange={(value) => setSettings({ ...settings, defaultShippingMarkupPercent: value })} />
+          <SettingField label="Tax %" value={settings.taxPercent} onChange={(value) => setSettings({ ...settings, taxPercent: value })} />
+          <SettingField label="Minimum order" value={settings.minimumOrderAmount} onChange={(value) => setSettings({ ...settings, minimumOrderAmount: value })} />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.h2}>Email Provider Settings</Text>
+          <Text style={styles.meta}>Choose mailto for drafts, or API for real sends.</Text>
+          <View style={styles.pillRow}>
+            <Pressable style={[styles.pill, emailConfig.provider === 'mailto' && styles.pillActive]} onPress={() => setEmailConfig({ ...emailConfig, provider: 'mailto' })}>
+              <Text style={styles.pillText}>Mailto (Draft)</Text>
+            </Pressable>
+            <Pressable style={[styles.pill, emailConfig.provider === 'api' && styles.pillActive]} onPress={() => setEmailConfig({ ...emailConfig, provider: 'api' })}>
+              <Text style={styles.pillText}>API Provider (Real Send)</Text>
+            </Pressable>
+          </View>
+          <Field label="From email" value={emailConfig.fromEmail} onChange={(value) => setEmailConfig({ ...emailConfig, fromEmail: value })} />
+          {emailConfig.provider === 'api' && (
+            <>
+              <Field label="Email API endpoint" value={emailConfig.apiEndpoint} onChange={(value) => setEmailConfig({ ...emailConfig, apiEndpoint: value })} />
+              <Field label="Email API key" value={emailConfig.apiKey} onChange={(value) => setEmailConfig({ ...emailConfig, apiKey: value })} />
+            </>
+          )}
         </View>
 
         <View style={styles.card}>
@@ -333,11 +324,11 @@ export default function App() {
               </View>
 
               <View style={styles.pillRow}>
-                <Pressable style={styles.altButton} onPress={() => emailDocument(job, 'quote')}>
-                  <Text style={styles.altButtonText}>Email Quote</Text>
+                <Pressable style={styles.altButton} onPress={() => void sendEmail(job, 'quote')}>
+                  <Text style={styles.altButtonText}>Send Quote Email</Text>
                 </Pressable>
-                <Pressable style={styles.altButton} onPress={() => emailDocument(job, 'invoice')}>
-                  <Text style={styles.altButtonText}>Email Invoice</Text>
+                <Pressable style={styles.altButton} onPress={() => void sendEmail(job, 'invoice')}>
+                  <Text style={styles.altButtonText}>Send Invoice Email</Text>
                 </Pressable>
                 <Pressable style={styles.altButton} onPress={() => exportDocument(job, 'quote', 'download')}>
                   <Text style={styles.altButtonText}>Download Quote</Text>
@@ -362,7 +353,10 @@ export default function App() {
         <View style={styles.card}>
           <Text style={styles.h2}>Documents + Email Activity</Text>
           <Text style={styles.meta}>Generated documents: {documents.length}</Text>
-          <Text style={styles.meta}>Emails drafted: {communications.length}</Text>
+          <Text style={styles.meta}>Email records: {communications.length}</Text>
+          {communications.slice(0, 5).map((item) => (
+            <Text key={item.id} style={styles.meta}>• {item.provider.toUpperCase()} {item.kind}: {item.status.toUpperCase()}</Text>
+          ))}
         </View>
 
         <View style={styles.card}>
@@ -409,137 +403,28 @@ const SettingField = ({ label, value, onChange }: SettingFieldProps) => (
 );
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: '#f4f6fb'
-  },
-  container: {
-    gap: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    maxWidth: 960,
-    width: '100%',
-    alignSelf: 'center'
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 14,
-    gap: 10,
-    borderWidth: 1,
-    borderColor: '#dce2f2'
-  },
-  h1: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1f2a44'
-  },
-  h2: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1f2a44'
-  },
-  h3: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1f2a44'
-  },
-  fieldWrap: {
-    flex: 1,
-    gap: 4
-  },
-  label: {
-    fontWeight: '500',
-    color: '#28344f'
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#c7d0e5',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: '#fbfcff'
-  },
-  inputMultiline: {
-    minHeight: 80,
-    textAlignVertical: 'top'
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 8
-  },
-  pillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8
-  },
-  pill: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#97a8d0',
-    paddingHorizontal: 10,
-    paddingVertical: 6
-  },
-  pillActive: {
-    backgroundColor: '#dfe8ff'
-  },
-  pillText: {
-    color: '#23345c'
-  },
-  summaryBox: {
-    marginTop: 10,
-    borderRadius: 10,
-    backgroundColor: '#eef3ff',
-    padding: 10,
-    gap: 4
-  },
-  button: {
-    marginTop: 10,
-    backgroundColor: '#355dcc',
-    borderRadius: 8,
-    alignItems: 'center',
-    padding: 10
-  },
-  smallButton: {
-    backgroundColor: '#355dcc',
-    borderRadius: 8,
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  altButton: {
-    backgroundColor: '#ebf0ff',
-    borderRadius: 8,
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#aec0f7'
-  },
-  altButtonText: {
-    color: '#233c7f',
-    fontWeight: '600'
-  },
-  buttonText: {
-    color: 'white',
-    fontWeight: '600'
-  },
-  meta: {
-    color: '#5c6a87'
-  },
-  jobCard: {
-    borderWidth: 1,
-    borderColor: '#d7deef',
-    borderRadius: 10,
-    padding: 10,
-    gap: 8
-  },
-  message: {
-    borderRadius: 8,
-    backgroundColor: '#f7f9ff',
-    borderWidth: 1,
-    borderColor: '#e0e6f7',
-    padding: 8,
-    color: '#2b3c63'
-  }
+  safe: { flex: 1, backgroundColor: '#f4f6fb' },
+  container: { gap: 16, paddingHorizontal: 16, paddingVertical: 20, maxWidth: 960, width: '100%', alignSelf: 'center' },
+  card: { backgroundColor: '#fff', borderRadius: 12, padding: 14, gap: 10, borderWidth: 1, borderColor: '#dce2f2' },
+  h1: { fontSize: 28, fontWeight: '700', color: '#1f2a44' },
+  h2: { fontSize: 20, fontWeight: '600', color: '#1f2a44' },
+  h3: { fontSize: 16, fontWeight: '600', color: '#1f2a44' },
+  fieldWrap: { flex: 1, gap: 4 },
+  label: { fontWeight: '500', color: '#28344f' },
+  input: { borderWidth: 1, borderColor: '#c7d0e5', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: '#fbfcff' },
+  inputMultiline: { minHeight: 80, textAlignVertical: 'top' },
+  row: { flexDirection: 'row', gap: 8 },
+  pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  pill: { borderRadius: 999, borderWidth: 1, borderColor: '#97a8d0', paddingHorizontal: 10, paddingVertical: 6 },
+  pillActive: { backgroundColor: '#dfe8ff' },
+  pillText: { color: '#23345c' },
+  summaryBox: { marginTop: 10, borderRadius: 10, backgroundColor: '#eef3ff', padding: 10, gap: 4 },
+  button: { marginTop: 10, backgroundColor: '#355dcc', borderRadius: 8, alignItems: 'center', padding: 10 },
+  smallButton: { backgroundColor: '#355dcc', borderRadius: 8, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 8 },
+  altButton: { backgroundColor: '#ebf0ff', borderRadius: 8, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: '#aec0f7' },
+  altButtonText: { color: '#233c7f', fontWeight: '600' },
+  buttonText: { color: 'white', fontWeight: '600' },
+  meta: { color: '#5c6a87' },
+  jobCard: { borderWidth: 1, borderColor: '#d7deef', borderRadius: 10, padding: 10, gap: 8 },
+  message: { borderRadius: 8, backgroundColor: '#f7f9ff', borderWidth: 1, borderColor: '#e0e6f7', padding: 8, color: '#2b3c63' }
 });

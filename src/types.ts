@@ -77,12 +77,26 @@ export type GeneratedDocument = {
   generatedAt: string;
 };
 
+export type EmailProviderKind = 'mailto' | 'api';
+
+export type EmailConfig = {
+  provider: EmailProviderKind;
+  fromEmail: string;
+  apiEndpoint: string;
+  apiKey: string;
+};
+
+export type CommunicationStatus = 'drafted' | 'sent' | 'failed';
+
 export type CommunicationRecord = {
   id: string;
   jobId: string;
   kind: DocumentKind;
   channel: 'email';
+  provider: EmailProviderKind;
   recipient: string;
   subject: string;
+  status: CommunicationStatus;
+  error?: string;
   createdAt: string;
 };

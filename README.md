@@ -9,7 +9,9 @@ An auto-quoting + invoicing starter app for 3D printing commissions.
 - Job card pipeline:
   - pending -> approved -> quoted -> invoiced
 - Generated quote + invoice message templates
-- Email framework (mailto drafts for quote/invoice sends)
+- Email provider interface:
+  - `mailto` provider for draft-based sending
+  - API provider for real transactional sends via your email backend
 - PDF-ready document framework:
   - downloadable HTML quote/invoice files
   - print dialog workflow so users can save to PDF
@@ -23,6 +25,21 @@ npm install
 npm run web
 ```
 
+## API email provider contract
+
+When API provider mode is enabled, the app sends a `POST` request to your configured endpoint with JSON:
+
+```json
+{
+  "from": "quotes@yourshop.com",
+  "to": "client@email.com",
+  "subject": "3D Print Quote: Widget",
+  "body": "..."
+}
+```
+
+Use the `Authorization: Bearer <apiKey>` header by setting an API key in settings.
+
 ## Project structure
 
 - `App.tsx` - app shell + workflow wiring.
@@ -30,16 +47,9 @@ npm run web
 - `src/logic/pricing.ts` - quote engine.
 - `src/logic/messages.ts` - quote/invoice text generation.
 - `src/logic/documentTemplates.ts` - reusable HTML rendering for quote/invoice docs.
-- `src/services/email.ts` - email channel abstraction (mailto drafting).
+- `src/services/email.ts` - provider interface + mailto/api implementations.
 - `src/services/pdf.ts` - document export helpers (download + print/PDF).
 - `src/config/defaultSettings.ts` - default pricing knobs.
+- `src/config/defaultEmailConfig.ts` - default email provider config.
 - `src/state/usePersistentState.ts` - local storage hook.
 - `src/components/FilePicker.web.tsx` - web STL uploader input.
-
-## Suggested next upgrades
-
-- Real SMTP/transactional email provider integration (SendGrid/SES/Postmark)
-- Server-side PDF generation service for consistent rendering
-- Auth + role-based access
-- Client portal with quote acceptance and payments (e.g., Stripe)
-- Inventory depletion by filament SKU/spool
