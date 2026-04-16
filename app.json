@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Auto Quote",
+    "slug": "auto-quote",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
