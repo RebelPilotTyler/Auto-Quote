@@ -66,3 +66,23 @@ export type FinanceRecord = {
   materialGrams: number;
   createdAt: string;
 };
+
+export type DocumentKind = 'quote' | 'invoice';
+
+export type GeneratedDocument = {
+  id: string;
+  jobId: string;
+  kind: DocumentKind;
+  html: string;
+  generatedAt: string;
+};
+
+export type CommunicationRecord = {
+  id: string;
+  jobId: string;
+  kind: DocumentKind;
+  channel: 'email';
+  recipient: string;
+  subject: string;
+  createdAt: string;
+};

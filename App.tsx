@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -14,7 +15,17 @@ import { defaultSettings } from './src/config/defaultSettings';
 import { buildInvoiceMessage, buildQuoteMessage } from './src/logic/messages';
 import { calculateQuote } from './src/logic/pricing';
 import { usePersistentState } from './src/state/usePersistentState';
-import { FinanceRecord, JobCard, PricingSettings, PrintRequest } from './src/types';
+import { buildEmailDraft } from './src/services/email';
+import { createDocument, downloadHtmlDocument, openPrintPreview } from './src/services/pdf';
+import {
+  CommunicationRecord,
+  DocumentKind,
+  FinanceRecord,
+  GeneratedDocument,
+  JobCard,
+  PricingSettings,
+  PrintRequest
+} from './src/types';
 
 const emptyRequest: PrintRequest = {
   clientName: '',
@@ -41,6 +52,11 @@ export default function App() {
   const [settings, setSettings] = usePersistentState<PricingSettings>('aq_settings', defaultSettings);
   const [jobs, setJobs] = usePersistentState<JobCard[]>('aq_jobs', []);
   const [finance, setFinance] = usePersistentState<FinanceRecord[]>('aq_finance', []);
+  const [documents, setDocuments] = usePersistentState<GeneratedDocument[]>('aq_docs', []);
+  const [communications, setCommunications] = usePersistentState<CommunicationRecord[]>(
+    'aq_comms',
+    []
+  );
 
   const preview = useMemo(() => calculateQuote(request, settings), [request, settings]);
 
@@ -56,17 +72,8 @@ export default function App() {
     setRequest(emptyRequest);
   };
 
-  const approveJob = (jobId: string) => {
-    setJobs(
-      jobs.map((job) =>
-        job.id === jobId
-          ? {
-              ...job,
-              status: 'approved'
-            }
-          : job
-      )
-    );
+  const updateJobStatus = (jobId: string, status: JobCard['status']) => {
+    setJobs(jobs.map((job) => (job.id === jobId ? { ...job, status } : job)));
   };
 
   const generateQuote = (jobId: string) => {
@@ -84,31 +91,86 @@ export default function App() {
   };
 
   const generateInvoice = (jobId: string) => {
+    const target = jobs.find((job) => job.id === jobId);
+    if (!target) {
+      return;
+    }
+
+    const updatedFinance = [
+      {
+        jobId: target.id,
+        title: target.request.projectTitle,
+        total: target.breakdown.total,
+        materialGrams: target.request.estimatedGrams,
+        createdAt: new Date().toISOString()
+      },
+      ...finance
+    ];
+
+    setFinance(updatedFinance);
     setJobs(
-      jobs.map((job) => {
-        if (job.id !== jobId) {
-          return job;
-        }
-
-        const updated = {
-          ...job,
-          status: 'invoiced' as const,
-          invoiceMessage: buildInvoiceMessage(job)
-        };
-
-        setFinance([
-          {
-            jobId: updated.id,
-            title: updated.request.projectTitle,
-            total: updated.breakdown.total,
-            materialGrams: updated.request.estimatedGrams,
-            createdAt: new Date().toISOString()
-          },
-          ...finance
-        ]);
-        return updated;
-      })
+      jobs.map((job) =>
+        job.id === jobId
+          ? {
+              ...job,
+              status: 'invoiced',
+              invoiceMessage: buildInvoiceMessage(job)
+            }
+          : job
+      )
     );
+  };
+
+  const createDocumentForJob = (job: JobCard, kind: DocumentKind) => {
+    const { html } = createDocument(job, kind);
+    setDocuments([
+      {
+        id: `${kind}-${job.id}-${Date.now()}`,
+        jobId: job.id,
+        kind,
+        html,
+        generatedAt: new Date().toISOString()
+      },
+      ...documents
+    ]);
+    return html;
+  };
+
+  const emailDocument = (job: JobCard, kind: DocumentKind) => {
+    const body = kind === 'quote' ? job.quoteMessage ?? buildQuoteMessage(job) : job.invoiceMessage ?? buildInvoiceMessage(job);
+    const { subject, mailto } = buildEmailDraft(job, kind, body);
+
+    setCommunications([
+      {
+        id: `${Date.now()}`,
+        jobId: job.id,
+        kind,
+        channel: 'email',
+        recipient: job.request.clientEmail,
+        subject,
+        createdAt: new Date().toISOString()
+      },
+      ...communications
+    ]);
+
+    if (typeof window !== 'undefined') {
+      window.location.href = mailto;
+    }
+  };
+
+  const exportDocument = (job: JobCard, kind: DocumentKind, mode: 'download' | 'print') => {
+    const html = createDocumentForJob(job, kind);
+    const { filename } = createDocument(job, kind);
+
+    if (mode === 'download') {
+      downloadHtmlDocument(html, filename);
+      return;
+    }
+
+    const opened = openPrintPreview(html);
+    if (!opened) {
+      Alert.alert('Popup blocked', 'Please allow popups to open the print dialog.');
+    }
   };
 
   return (
@@ -259,7 +321,7 @@ export default function App() {
               <Text style={styles.meta}>{job.request.clientName} • {job.status.toUpperCase()} • ${job.breakdown.total.toFixed(2)}</Text>
 
               <View style={styles.pillRow}>
-                <Pressable style={styles.smallButton} onPress={() => approveJob(job.id)}>
+                <Pressable style={styles.smallButton} onPress={() => updateJobStatus(job.id, 'approved')}>
                   <Text style={styles.buttonText}>Approve</Text>
                 </Pressable>
                 <Pressable style={styles.smallButton} onPress={() => generateQuote(job.id)}>
@@ -270,10 +332,37 @@ export default function App() {
                 </Pressable>
               </View>
 
+              <View style={styles.pillRow}>
+                <Pressable style={styles.altButton} onPress={() => emailDocument(job, 'quote')}>
+                  <Text style={styles.altButtonText}>Email Quote</Text>
+                </Pressable>
+                <Pressable style={styles.altButton} onPress={() => emailDocument(job, 'invoice')}>
+                  <Text style={styles.altButtonText}>Email Invoice</Text>
+                </Pressable>
+                <Pressable style={styles.altButton} onPress={() => exportDocument(job, 'quote', 'download')}>
+                  <Text style={styles.altButtonText}>Download Quote</Text>
+                </Pressable>
+                <Pressable style={styles.altButton} onPress={() => exportDocument(job, 'invoice', 'download')}>
+                  <Text style={styles.altButtonText}>Download Invoice</Text>
+                </Pressable>
+                <Pressable style={styles.altButton} onPress={() => exportDocument(job, 'quote', 'print')}>
+                  <Text style={styles.altButtonText}>Print/Save PDF Quote</Text>
+                </Pressable>
+                <Pressable style={styles.altButton} onPress={() => exportDocument(job, 'invoice', 'print')}>
+                  <Text style={styles.altButtonText}>Print/Save PDF Invoice</Text>
+                </Pressable>
+              </View>
+
               {job.quoteMessage && <Text style={styles.message}>{job.quoteMessage}</Text>}
               {job.invoiceMessage && <Text style={styles.message}>{job.invoiceMessage}</Text>}
             </View>
           ))}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.h2}>Documents + Email Activity</Text>
+          <Text style={styles.meta}>Generated documents: {documents.length}</Text>
+          <Text style={styles.meta}>Emails drafted: {communications.length}</Text>
         </View>
 
         <View style={styles.card}>
@@ -417,6 +506,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8
+  },
+  altButton: {
+    backgroundColor: '#ebf0ff',
+    borderRadius: 8,
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#aec0f7'
+  },
+  altButtonText: {
+    color: '#233c7f',
+    fontWeight: '600'
   },
   buttonText: {
     color: 'white',
